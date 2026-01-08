@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-S-Grams CLI Tool
+N-Grams CLI Tool
 
-Command-line interface for exploring S-Gram state transformations.
+Command-line interface for exploring N-Gram state transformations.
+Supports 1st Power, 2nd Power (S-Grams), 3rd Power, 2D Catalan, and 3D Catalan.
 
 Usage:
-    python sgrams_cli.py summary                    # Show summary of all S-Grams
-    python sgrams_cli.py show <index>              # Show details for S-Gram at index
-    python sgrams_cli.py transition <index> <state> # Show state transitions
-    python sgrams_cli.py compare                    # Compare all S-Grams
-    python sgrams_cli.py export                     # Export all tables to markdown
+    python sgrams_cli.py summary [--type TYPE]         # Show summary of N-Grams
+    python sgrams_cli.py show <index> [--type TYPE]    # Show details for N-Gram at index
+    python sgrams_cli.py transition <index> <state>    # Show state transitions (S-Grams only)
+    python sgrams_cli.py compare [--type TYPE]         # Compare N-Grams
+    python sgrams_cli.py export [--type TYPE]          # Export tables to markdown
+    python sgrams_cli.py types                         # List all available N-Gram types
 """
 
 import sys
@@ -19,7 +21,14 @@ from pathlib import Path
 # Add the src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from sgrams import SGram
+from sgrams import (
+    SGram,
+    NGram1stPower, NGram1stPowerFactory,
+    NGram3rdPower, NGram3rdPowerFactory,
+    NGram2DCatalan, NGram2DCatalanFactory,
+    NGram3DCatalan, NGram3DCatalanFactory,
+    FlipTransform
+)
 from sgrams.sgram import SGramFactory
 from sgrams.state_transformer import StateTransformer
 from sgrams.fraction_patterns import FractionPatternAnalyzer, CrossSGramAnalyzer
@@ -30,19 +39,96 @@ from sgrams.table_generator import (
 )
 
 
+NGRAM_TYPES = {
+    '1st': '1st Power (Linear)',
+    '2nd': '2nd Power (S-Grams/Quadratic)',
+    '3rd': '3rd Power (Cubic)',
+    '2d': '2D Catalan (Rooted Trees)',
+    '3d': '3D Catalan (Unlabeled Trees)',
+}
+
+
+def get_ngram_factory(ngram_type: str):
+    """Get the appropriate factory for the N-Gram type"""
+    factories = {
+        '1st': NGram1stPowerFactory,
+        '2nd': SGramFactory,
+        '3rd': NGram3rdPowerFactory,
+        '2d': NGram2DCatalanFactory,
+        '3d': NGram3DCatalanFactory,
+    }
+    return factories.get(ngram_type)
+
+
+def cmd_types(args):
+    """List all available N-Gram types"""
+    print("\nAvailable N-Gram Types:")
+    print("=" * 70)
+    for key, description in NGRAM_TYPES.items():
+        print(f"  {key:5s} : {description}")
+    print("\nUse --type <TYPE> to specify which N-Gram type to use")
+    print("Default is '2nd' (S-Grams)")
+    return 0
+
+
 def cmd_summary(args):
-    """Display summary of all S-Grams"""
-    generator = AllSGramsTableGenerator()
-    print(generator.generate_summary_table())
+    """Display summary of N-Grams"""
+    ngram_type = args.type if hasattr(args, 'type') and args.type else '2nd'
+    
+    if ngram_type == '2nd':
+        # Use existing S-Grams summary
+        generator = AllSGramsTableGenerator()
+        print(generator.generate_summary_table())
+    else:
+        # Generate summary for other types
+        factory = get_ngram_factory(ngram_type)
+        if not factory:
+            print(f"Error: Unknown N-Gram type '{ngram_type}'", file=sys.stderr)
+            return 1
+        
+        print(f"\n{NGRAM_TYPES[ngram_type]} Summary")
+        print("=" * 70)
+        
+        try:
+            ngrams = factory.create_range(0, 12)
+            print(f"\n{'Index':<8} {'Symbol':<12} {'Value':<10} {'Formula'}")
+            print("-" * 70)
+            for ng in ngrams:
+                print(f"{ng.index:<8} {ng.symbol:<12} {ng.sequence_value:<10} {ng.formula}")
+        except Exception as e:
+            print(f"Error generating summary: {e}", file=sys.stderr)
+            return 1
+    
+    return 0
 
 
 def cmd_show(args):
-    """Show detailed information for a specific S-Gram"""
+    """Show detailed information for a specific N-Gram"""
+    ngram_type = args.type if hasattr(args, 'type') and args.type else '2nd'
+    factory = get_ngram_factory(ngram_type)
+    
+    if not factory:
+        print(f"Error: Unknown N-Gram type '{ngram_type}'", file=sys.stderr)
+        return 1
+    
     try:
-        sgram = SGramFactory.create_sgram(args.index)
-        generator = StateTransformationTableGenerator(sgram)
-        print(generator.generate_complete_table())
-    except ValueError as e:
+        if ngram_type == '2nd':
+            sgram = factory.create_sgram(args.index)
+            generator = StateTransformationTableGenerator(sgram)
+            print(generator.generate_complete_table())
+        elif ngram_type == '1st':
+            ngram = factory.create_ngram_1st(args.index)
+            print(ngram)
+        elif ngram_type == '3rd':
+            ngram = factory.create_ngram_3rd(args.index)
+            print(ngram)
+        elif ngram_type == '2d':
+            ngram = factory.create_ngram_2d_catalan(args.index)
+            print(ngram)
+        elif ngram_type == '3d':
+            ngram = factory.create_ngram_3d_catalan(args.index)
+            print(ngram)
+    except (ValueError, IndexError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     return 0
@@ -91,31 +177,101 @@ def cmd_transition(args):
 
 
 def cmd_compare(args):
-    """Compare patterns across all S-Grams"""
-    generator = AllSGramsTableGenerator()
-    print(generator.generate_comparison_table())
+    """Compare patterns across N-Grams"""
+    ngram_type = args.type if hasattr(args, 'type') and args.type else '2nd'
     
-    # Cross-S-Gram analysis
-    sgrams = SGramFactory.create_all_sgrams()
-    analyzer = CrossSGramAnalyzer(sgrams)
+    if ngram_type == '2nd':
+        generator = AllSGramsTableGenerator()
+        print(generator.generate_comparison_table())
+        
+        # Cross-S-Gram analysis
+        sgrams = SGramFactory.create_all_sgrams()
+        analyzer = CrossSGramAnalyzer(sgrams)
+        
+        print("\nCommon Patterns Across S-Grams:")
+        print("=" * 70)
+        common = analyzer.find_common_patterns()
+        for divisor, sgram_indices in common[:10]:  # Top 10
+            print(f"  {divisor}: appears in S-Grams {sgram_indices}")
+    else:
+        # Generate comparison for other types
+        factory = get_ngram_factory(ngram_type)
+        if not factory:
+            print(f"Error: Unknown N-Gram type '{ngram_type}'", file=sys.stderr)
+            return 1
+        
+        print(f"\n{NGRAM_TYPES[ngram_type]} Comparison")
+        print("=" * 70)
+        
+        try:
+            ngrams = factory.create_range(0, 12)
+            
+            print(f"\n{'Index':<8} {'Value':<12} {'Growth Rate':<15} {'Patterns'}")
+            print("-" * 70)
+            
+            prev_value = 0
+            for ng in ngrams:
+                growth = ng.sequence_value - prev_value if prev_value > 0 else 0
+                pattern_count = len(ng.fraction_patterns)
+                print(f"{ng.index:<8} {ng.sequence_value:<12} {growth:<15} {pattern_count}")
+                prev_value = ng.sequence_value
+                
+        except Exception as e:
+            print(f"Error generating comparison: {e}", file=sys.stderr)
+            return 1
     
-    print("\nCommon Patterns Across S-Grams:")
-    print("=" * 70)
-    common = analyzer.find_common_patterns()
-    for divisor, sgram_indices in common[:10]:  # Top 10
-        print(f"  {divisor}: appears in S-Grams {sgram_indices}")
+    return 0
 
 
 def cmd_export(args):
     """Export all tables to markdown file"""
-    output_file = args.output or "SGRAMS_TABLES.md"
+    ngram_type = args.type if hasattr(args, 'type') and args.type else '2nd'
+    output_file = args.output or f"NGRAMS_{ngram_type.upper()}_TABLES.md"
     
-    content = generate_all_markdown_tables()
+    if ngram_type == '2nd':
+        content = generate_all_markdown_tables()
+    else:
+        # Generate markdown for other types
+        factory = get_ngram_factory(ngram_type)
+        if not factory:
+            print(f"Error: Unknown N-Gram type '{ngram_type}'", file=sys.stderr)
+            return 1
+        
+        try:
+            ngrams = factory.create_range(0, 12)
+            
+            content = f"# {NGRAM_TYPES[ngram_type]} Tables\n\n"
+            content += f"Generated tables for {NGRAM_TYPES[ngram_type]}\n\n"
+            content += "## Summary\n\n"
+            content += "| Index | Symbol | Value | Formula |\n"
+            content += "|-------|--------|-------|----------|\n"
+            
+            for ng in ngrams:
+                content += f"| {ng.index} | {ng.symbol} | {ng.sequence_value} | {ng.formula} |\n"
+            
+            content += "\n## Detailed Information\n\n"
+            
+            for ng in ngrams:
+                content += f"### {ng.symbol} (Index {ng.index})\n\n"
+                content += f"**Value:** {ng.sequence_value}\n\n"
+                content += f"**Formula:** {ng.formula}\n\n"
+                
+                if ng.fraction_patterns:
+                    content += "**Patterns:**\n\n"
+                    for divisor, pattern in ng.fraction_patterns.items():
+                        content += f"- {divisor}: {' '.join(map(str, pattern))}\n"
+                    content += "\n"
+                
+                content += "---\n\n"
+        
+        except Exception as e:
+            print(f"Error generating export: {e}", file=sys.stderr)
+            return 1
     
     with open(output_file, 'w') as f:
         f.write(content)
     
-    print(f"Exported S-Grams tables to {output_file}")
+    print(f"Exported {NGRAM_TYPES[ngram_type]} tables to {output_file}")
     return 0
 
 
@@ -155,35 +311,45 @@ def cmd_trace(args):
 def main():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
-        description="S-Grams State Transformation Explorer",
+        description="N-Grams State Transformation Explorer (1st, 2nd, 3rd Power and Catalan)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s summary
-  %(prog)s show 3
+  %(prog)s types
+  %(prog)s summary --type 1st
+  %(prog)s summary --type 3rd
+  %(prog)s show 3 --type 2d
+  %(prog)s show 5 --type 3d
   %(prog)s transition 3 5
   %(prog)s trace 3 1 --steps 10
-  %(prog)s compare
-  %(prog)s export --output my_tables.md
+  %(prog)s compare --type 1st
+  %(prog)s export --type 3rd --output cubic_tables.md
         """
     )
     
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
     
+    # Types command
+    subparsers.add_parser('types', help='List all available N-Gram types')
+    
     # Summary command
-    subparsers.add_parser('summary', help='Display summary of all S-Grams')
+    summary_parser = subparsers.add_parser('summary', help='Display summary of N-Grams')
+    summary_parser.add_argument('--type', choices=NGRAM_TYPES.keys(), default='2nd',
+                                help='N-Gram type (default: 2nd)')
     
     # Show command
-    show_parser = subparsers.add_parser('show', help='Show details for specific S-Gram')
-    show_parser.add_argument('index', type=int, help='S-Gram index (0-11)')
+    show_parser = subparsers.add_parser('show', help='Show details for specific N-Gram')
+    show_parser.add_argument('index', type=int, help='N-Gram index (0-11)')
+    show_parser.add_argument('--type', choices=NGRAM_TYPES.keys(), default='2nd',
+                            help='N-Gram type (default: 2nd)')
     
-    # Transition command
-    trans_parser = subparsers.add_parser('transition', help='Show state transitions')
+    # Transition command (S-Grams only)
+    trans_parser = subparsers.add_parser('transition', help='Show state transitions (S-Grams only)')
     trans_parser.add_argument('index', type=int, help='S-Gram index (0-11)')
     trans_parser.add_argument('state', type=int, help='State value')
     
-    # Trace command
-    trace_parser = subparsers.add_parser('trace', help='Trace path through state space')
+    # Trace command (S-Grams only)
+    trace_parser = subparsers.add_parser('trace', help='Trace path through state space (S-Grams only)')
     trace_parser.add_argument('index', type=int, help='S-Gram index (0-11)')
     trace_parser.add_argument('state', type=int, help='Starting state')
     trace_parser.add_argument('--steps', type=int, default=10, help='Number of steps (default: 10)')
@@ -191,11 +357,15 @@ Examples:
     trace_parser.add_argument('--reverse', action='store_true', help='Trace backward (inform)')
     
     # Compare command
-    subparsers.add_parser('compare', help='Compare patterns across all S-Grams')
+    compare_parser = subparsers.add_parser('compare', help='Compare patterns across N-Grams')
+    compare_parser.add_argument('--type', choices=NGRAM_TYPES.keys(), default='2nd',
+                               help='N-Gram type (default: 2nd)')
     
     # Export command
     export_parser = subparsers.add_parser('export', help='Export tables to markdown')
-    export_parser.add_argument('--output', '-o', help='Output file (default: SGRAMS_TABLES.md)')
+    export_parser.add_argument('--output', '-o', help='Output file (default: auto-generated)')
+    export_parser.add_argument('--type', choices=NGRAM_TYPES.keys(), default='2nd',
+                              help='N-Gram type (default: 2nd)')
     
     args = parser.parse_args()
     
@@ -205,6 +375,7 @@ Examples:
     
     # Dispatch to appropriate command
     commands = {
+        'types': cmd_types,
         'summary': cmd_summary,
         'show': cmd_show,
         'transition': cmd_transition,
